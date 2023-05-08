@@ -31,6 +31,15 @@ const ♠ = Suit(3)
 
 const suits = [♣, ♢, ♡, ♠]
 
+#parsing maps
+const rank_map = Dict(
+    '2'=> 2, '3'=> 3, '4'=> 4, '5'=> 5, '6'=> 6, '7'=> 7, '8'=> 8, '9'=> 9,
+    'T'=> 10, 'J'=> 11, 'Q'=> 12, 'K'=> 13, 'A'=> 14
+    )
+const suit_map = Dict('c'=> 0, 'd'=> 1, 'h'=> 2, 's'=> 3)
+const suit_reverse_map = Dict(0 => 'c', 1 => 'd', 2 => 'h', 3 => 's')
+const rank_reverse_map = Dict(value => key for (key, value) in rank_map)
+
 """
 Encode a playing card as a 6-bit integer (low bits of a `UInt8`):
 
@@ -58,15 +67,19 @@ function Card(r::Integer, s::Integer)
     return Card(((s << 4) % UInt8) | (r % UInt8))
 end
 Card(r::Integer, s::Suit) = Card(r, s.i)
+Card(card::Union{String,SubString}) = Card(rank_map[card[1]],Suit(suit_map[card[2]]))
+#Can't import Base.parse for some reason as then 'using .Cards' hangs
+#Base.parse(Card,card::String) = Card(rank_map[card[1]],Suit(suit_map[card[2]]))
+
 
 suit(c::Card) = Suit((0x30 & c.value) >>> 4)
 rank(c::Card) = (c.value & 0x0f) % Int8
 
+
 function Base.show(io::IO, c::Card)
     r = rank(c)
     if 1 ≤ r ≤ 14
-        r == 10 && print(io, '1')
-        print(io, "1234567890JQKA"[r])
+        print(io, "123456789TJQKA"[r])
     else
         print(io, '\U1f0cf')
     end
@@ -75,7 +88,7 @@ end
 
 *(r::Integer, s::Suit) = Card(r, s)
 
-for s in "♣♢♡♠", (r,f) in zip(11:14, "JQKA")
+for s in "♣♢♡♠", (r,f) in zip(10:14, "TJQKA")
     ss, sc = Symbol(s), Symbol("$f$s")
     @eval (export $sc; const $sc = Card($r,$ss))
 end
@@ -101,6 +114,10 @@ function Hand(cards)
     end
     return hand
 end
+Hand(hand::Union{String,SubString}) = Hand(Card(card.match) for card in eachmatch(r"[\dTJQKA][cdhs]",hand))
+
+#Base.parse(Hand,hand::String) = Hand(parse(Card,card.match) for card in eachmatch(r"[\dTJQKA][cdhs]",hand))
+stringhand(hand::Hand) = join(rank_reverse_map[rank(card)]*suit_reverse_map[suit(card)] for card in hand)
 
 Base.in(c::Card, h::Hand) = (bit(c) & h.cards) != 0
 Base.length(h::Hand) = count_ones(h.cards)
@@ -148,7 +165,7 @@ function Base.show(io::IO, hand::Hand)
                 if r == 10
                     print(io, '\u2491')
                 elseif 1 ≤ r ≤ 14
-                    print(io, "1234567890JQKA"[r])
+                    print(io, "123456789TJQKA"[r])
                 else
                     print(io, '\U1f0cf')
                 end
