@@ -1,8 +1,12 @@
 module Cards
 
-export Suit, Card, Hand, ♣, ♢, ♡, ♠, .., deal, points
+export Suit, Rank, Card, Hand, ♣, ♢, ♡, ♠, .., deal!, points, suitcount, rankcount, suitbinary, shuffle, shuffled_deck, rand
 
-import Base: *, |, &
+import Base: *, |, &, ~, -, parse, isless
+
+using Random: randperm
+import Random
+using StatsBase: sample
 
 """
 Encode a suit as a 2-bit value (low bits of a `UInt8`):
@@ -23,6 +27,9 @@ end
 char(s::Suit) = Char(0x2663-s.i)
 Base.string(s::Suit) = string(char(s))
 Base.show(io::IO, s::Suit) = print(io, char(s))
+Base.isless(c::Suit,d::Suit) = c.i < d.i
+
+Suit(char::Char) = Suit(suit_map[char])
 
 const ♣ = Suit(0)
 const ♢ = Suit(1)
@@ -31,14 +38,36 @@ const ♠ = Suit(3)
 
 const suits = [♣, ♢, ♡, ♠]
 
-#parsing maps
-const rank_map = Dict(
-    '2'=> 2, '3'=> 3, '4'=> 4, '5'=> 5, '6'=> 6, '7'=> 7, '8'=> 8, '9'=> 9,
-    'T'=> 10, 'J'=> 11, 'Q'=> 12, 'K'=> 13, 'A'=> 14
-    )
-const suit_map = Dict('c'=> 0, 'd'=> 1, 'h'=> 2, 's'=> 3)
-const suit_reverse_map = Dict(0 => 'c', 1 => 'd', 2 => 'h', 3 => 's')
-const rank_reverse_map = Dict(value => key for (key, value) in rank_map)
+"""
+Encode a rank as a 6-bit value (low bits of a `UInt8`):
+
+Ranks are assigned as follows:
+
+- numbered cards (2 to 10) have rank equal to their number
+- jacks, queens and kings have ranks 11, 12 and 13
+- there are low and high aces with ranks 1 and 14
+- there are low and high jokers with ranks 0 and 15
+
+This allows any of the standard orderings of cards ranks to be
+achieved simply by choosing which aces or which jokers to use.
+"""
+struct Rank
+    i::UInt8
+    Rank(s::Integer) = 0 ≤ s ≤ 15 ? new(s) :
+        throw(ArgumentError("invalid rank number: $s"))
+end
+Base.isless(c::Rank,d::Rank) = c.i < d.i
+
+Rank(char::Char) = Rank(rank_map[char])
+
+function char(r::Rank)
+    1 ≤ r.i ≤ 14 && return "123456789TJQKA"[r.i]
+    '\U1f0cf'
+end
+Base.string(r::Rank) = string(char(r))
+Base.show(io::IO, r::Rank) = print(io, char(r))
+
+
 
 """
 Encode a playing card as a 6-bit integer (low bits of a `UInt8`):
@@ -66,27 +95,36 @@ function Card(r::Integer, s::Integer)
     0 ≤ r ≤ 15 || throw(ArgumentError("invalid card rank: $r"))
     return Card(((s << 4) % UInt8) | (r % UInt8))
 end
-Card(r::Integer, s::Suit) = Card(r, s.i)
-Card(card::Union{String,SubString}) = Card(rank_map[card[1]],Suit(suit_map[card[2]]))
-#Can't import Base.parse for some reason as then 'using .Cards' hangs
-#Base.parse(Card,card::String) = Card(rank_map[card[1]],Suit(suit_map[card[2]]))
+Card(r::Int, s::Suit) = Card(r, s.i)
+Card(r::Rank, s::Suit) = Card(r.i, s.i)
+Card(card::AbstractString) = parse(Card,card)
 
+Base.parse(::Type{Card},card::AbstractString) = Card(Rank(card[1]),Suit(card[2]))
 
-suit(c::Card) = Suit((0x30 & c.value) >>> 4)
-rank(c::Card) = (c.value & 0x0f) % Int8
-
-
-function Base.show(io::IO, c::Card)
-    r = rank(c)
-    if 1 ≤ r ≤ 14
-        print(io, "123456789TJQKA"[r])
-    else
-        print(io, '\U1f0cf')
-    end
-    print(io, suit(c))
+function Base.isless(c::Card,d::Card)
+    rank(c) < rank(d) && return true
+    rank(c) > rank(d) && return false
+    suit(c) < suit(d)
 end
 
-*(r::Integer, s::Suit) = Card(r, s)
+#parsing maps
+const rank_map = Dict(
+    '2'=> 2, '3'=> 3, '4'=> 4, '5'=> 5, '6'=> 6, '7'=> 7, '8'=> 8, '9'=> 9,
+    'T'=> 10, 'J'=> 11, 'Q'=> 12, 'K'=> 13, 'A'=> 14
+    )
+const suit_map = Dict('c'=> 0, 'd'=> 1, 'h'=> 2, 's'=> 3)
+
+const suit_reverse_map = Dict(0 => 'c', 1 => 'd', 2 => 'h', 3 => 's')
+
+rankchar(c::Card) = c |> rank |> char
+suit(c::Card) = Suit((0x30 & c.value) >>> 4) 
+rank(c::Card) = Rank((c.value & 0x0f) % Int8)
+value(c::Card) = c.value
+Base.show(io::IO, c::Card) = print(io, rank(c), suit(c))
+#rand(::Type{Hand},ncards=2) = Hand(sample)
+*(r::Rank, s::Suit) = Card(r, s)
+*(r::Int, s::Suit) = Card(r, s)
+*(s::Suit, r::Rank) = Card(r, s)
 
 for s in "♣♢♡♠", (r,f) in zip(10:14, "TJQKA")
     ss, sc = Symbol(s), Symbol("$f$s")
@@ -103,11 +141,13 @@ end
 
 bit(c::Card) = one(UInt64) << c.value
 bits(s::Suit) = UInt64(0xffff) << 16(s.i)
+bits(r::UInt8) = UInt64(0x0001000100010001) << r
+bits(r::Rank) = UInt64(0x0001000100010001) << r.i
 
 function Hand(cards)
     hand = Hand(zero(UInt64))
     for card in cards
-        card isa Card || throw(ArgumentError("not a card: $repr(card)"))
+        card isa Card || throw(ArgumentError("not a card: $(repr(card))"))
         i = bit(card)
         hand.cards & i == 0 || throw(ArgumentError("duplicate cards are not supported"))
         hand = Hand(hand.cards | i)
@@ -117,7 +157,7 @@ end
 Hand(hand::Union{String,SubString}) = Hand(Card(card.match) for card in eachmatch(r"[\dTJQKA][cdhs]",hand))
 
 #Base.parse(Hand,hand::String) = Hand(parse(Card,card.match) for card in eachmatch(r"[\dTJQKA][cdhs]",hand))
-stringhand(hand::Hand) = join(rank_reverse_map[rank(card)]*suit_reverse_map[suit(card)] for card in hand)
+stringhand(hand::Hand) = join("A23456789TJQKA"[rank(card).i]*suit_reverse_map[suit(card).i] for card in hand)
 
 Base.in(c::Card, h::Hand) = (bit(c) & h.cards) != 0
 Base.length(h::Hand) = count_ones(h.cards)
@@ -148,31 +188,18 @@ function Base.getindex(h::Hand, i::Integer)
 end
 
 function Base.show(io::IO, hand::Hand)
-    if isempty(hand) || !get(io, :compact, false)
-        print(io, "Hand([")
-        for card in hand
-            print(io, card)
-            (bit(card) << 1) ≤ hand.cards && print(io, ", ")
-        end
-        print(io, "])")
-    else
-        for suit in suits
-            s = hand & suit
-            isempty(s) && continue
-            show(io, suit)
-            for card in s
-                r = rank(card)
-                if r == 10
-                    print(io, '\u2491')
-                elseif 1 ≤ r ≤ 14
-                    print(io, "123456789TJQKA"[r])
-                else
-                    print(io, '\U1f0cf')
-                end
-            end
-        end
+    cards = sort([c for c in hand],by=value,rev=true)
+    for c in cards
+        print(io,c)
+        print(io," ")
     end
 end
+Base.show(io::IO, ::MIME"text/plain", hand::Hand) = print(io, hand)
+
+~(a::Hand) = Hand(~a.cards)
+
+a::Hand - b::Hand = Hand(a.cards & ~b.cards)
+a::Hand - c::Card = Hand(a.cards & ~bit(c))
 
 a::Hand | b::Hand = Hand(a.cards | b.cards)
 a::Hand | c::Card = Hand(a.cards | bit(c))
@@ -191,10 +218,41 @@ Base.intersect(h::Hand, s::Suit) = intersect(s::Suit, h::Hand)
     throw(ArgumentError("card ranges need matching suits: $a vs $b"))
 
 const deck = Hand(Card(r,s) for s in suits for r = 2:14)
+const deckarr = collect(deck)
+
+Random.rand(::Type{Hand},ncards::Integer=4)=Hand(sample(deckarr,ncards;replace=false))
+function Random.rand(::Type{Hand},ncards::Vector{<:Integer})
+    arr = sample(deckarr,sum(ncards);replace=false)
+    v = Vector{Hand}(undef,length(ncards))
+    t=0
+    for i in eachindex(ncards)
+        y = t+1
+        t += ncards[i]
+        v[i] = Hand(arr[y:t])
+    end
+    v
+    #[(y=t+1;t+=n;Hand(arr[y:t])) for n in ncards]
+end
+
+shuffled_deck() = shuffle([Card(r,s) for s in suits for r = 2:14])
+
+function shuffle(deck)
+    deck[randperm(length(deck))]
+end
+
+function deal!(deck,n)
+    hand = Hand(pop!(deck) for _ in 1:n)
+end
 
 Base.empty(::Type{Hand}) = Hand(zero(UInt64))
 
-@eval Base.rand(::Type{Hand}) = Hand($(deck.cards) & rand(UInt64))
+suitbinary(hand::Hand,suit::Suit) = suitbinary(hand,suit.i)
+suitbinary(hand::Hand,i::Int) = (hand.cards >> (16 * i + 2)) & 0x0000_0000_0000_1fff
+
+suitcount(hand::Hand) = [count_ones((hand.cards >> (16*s)) & 0xffff) for s in 0:3]
+rankcount(hand::Hand) = [count_ones(hand.cards & (0x0004_0004_0004_0004 << s)) for s in 0:12]
+
+#@eval Base.rand(::Type{Hand}) = Hand($(deck.cards) & rand(UInt64))
 
 function deal!(counts::Vector{<:Integer}, hands::AbstractArray{Hand}, offset::Int=0)
     for rank = 2:14, suit = 0:3
